@@ -1,80 +1,59 @@
+
 import streamlit as st
 import pandas as pd
 import requests
-from io import BytesIO
 from bs4 import BeautifulSoup
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from io import BytesIO
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
-# CONFIGURACIÓN
-st.set_page_config(layout="wide")
-st.title("📥 Descarga de archivos SIGOF por ciclo")
+# CONFIGURACIÓN GOOGLE SHEETS
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
+client = gspread.authorize(creds)
 
-# ID DEL ARCHIVO DE GOOGLE SHEETS CON CONFIGURACIÓN
-CONFIG_SHEET_ID = "1td-2WGFN0FUlas0Vx8yYUSb7EZc7MbGWjHDtJYhEY-0"
+# ID de tu Google Sheet
+SHEET_ID = "TU_GOOGLE_SHEET_ID"
+sheet = client.open_by_key(SHEET_ID).sheet1
+data = sheet.get_all_records()
+df_config = pd.DataFrame(data)
 
-@st.cache_data(ttl=3600)
-def cargar_configuracion():
-    url = f"https://docs.google.com/spreadsheets/d/{CONFIG_SHEET_ID}/export?format=csv"
-    df = pd.read_csv(url, dtype=str).fillna("")
-    return df
+st.title("Descarga de archivos SIGOF por Ciclo")
 
-def obtener_archivo_desde_sigof(codigo):
-    url_login = "http://sigof.distriluz.com.pe/plus/usuario/login"
-    url_lista = "http://sigof.distriluz.com.pe/plus/facturacion/consultaarchivos/"
-    sesion = requests.Session()
-    sesion.post(url_login, data={"username": "censo", "password": "distriluz"})
-    respuesta = sesion.get(url_lista)
-    soup = BeautifulSoup(respuesta.content, "html.parser")
-    enlace = soup.find("a", string=lambda text: text and codigo in text)
-    if enlace:
-        url_descarga = "http://sigof.distriluz.com.pe" + enlace["href"]
-        archivo = sesion.get(url_descarga)
-        return BytesIO(archivo.content)
-    return None
+# Filtros: Selección de Ciclo
+ciclos_disponibles = df_config['nombre_ciclo'].unique()
+ciclo_seleccionado = st.selectbox("Selecciona un ciclo", ciclos_disponibles)
 
-def formatear_fecha():
-    tz = ZoneInfo("America/Lima")
-    ahora = datetime.now(tz)
-    return ahora.strftime("%Y-%m-%d %H:%M:%S")
+# Obtener datos del ciclo seleccionado
+filtro_ciclo = df_config[df_config['nombre_ciclo'] == ciclo_seleccionado].iloc[0]
+sectores = [s.strip() for s in filtro_ciclo['sectores'].split(',')] if filtro_ciclo['sectores'] else []
+observaciones = [o.strip() for o in filtro_ciclo['observaciones_permitidas'].split(',')] if filtro_ciclo['observaciones_permitidas'] else []
 
-# CARGAR CONFIGURACIÓN DESDE GOOGLE SHEETS
-df_config = cargar_configuracion()
-st.session_state.obs_dict = dict(zip(df_config['Id_ciclo'], df_config['observaciones_permitidas']))
-st.session_state.sector_dict = dict(zip(df_config['Id_ciclo'], df_config['sectores']))
+# Mostrar filtros adicionales
+sector = st.selectbox("Selecciona un sector", sectores) if sectores else None
+observacion = st.selectbox("Selecciona observación", observaciones) if observaciones else None
 
-# FORMULARIO
-with st.form("formulario"):
-    codigo = st.selectbox("Selecciona el ciclo", df_config['Id_ciclo'].unique())
-    aplicar_obs = st.checkbox("Filtrar por observaciones permitidas")
-    submit = st.form_submit_button("Descargar y filtrar")
+# URL LOGIN Y DESCARGA
+login_url = "http://sigof.distriluz.com.pe/plus/usuario/login"
+download_url = "http://sigof.distriluz.com.pe/plus/facturacion/descargar/"
 
-if submit:
-    archivo = obtener_archivo_desde_sigof(codigo)
-    if archivo:
-        df = pd.read_excel(archivo)
+# CREDENCIALES
+username = st.text_input("Usuario SIGOF")
+password = st.text_input("Contraseña SIGOF", type="password")
 
-        # Filtrar sectores
-        sectores_str = st.session_state.sector_dict.get(codigo, "")
-        sectores_lista = [int(s.strip()) for s in sectores_str.split(",") if s.strip().isdigit()]
-        if sectores_lista:
-            df['sector'] = pd.to_numeric(df['sector'], errors='coerce')
-            df = df[df['sector'].isin(sectores_lista)]
-
-        # Filtrar observaciones
-        obs_raw = st.session_state.obs_dict.get(codigo, "")
-        obs_permitidas = [o.strip() for o in obs_raw.split(",") if o.strip()]
-        if aplicar_obs and obs_permitidas:
-            df = df[df['obs_descripcion'].isin(obs_permitidas)]
-
-        # Mostrar resultados
-        st.success(f"✅ Archivo filtrado correctamente ({len(df)} registros)")
-        st.write(df)
-
-        # Descargar archivo
-        nombre_salida = f"SIGOF_filtrado_{codigo}_{formatear_fecha().replace(':', '-')}.xlsx"
-        buffer = BytesIO()
-        df.to_excel(buffer, index=False)
-        st.download_button("📥 Descargar archivo filtrado", buffer.getvalue(), file_name=nombre_salida)
-    else:
-        st.error("❌ No se encontró el archivo para el ciclo indicado.")
+if st.button("Iniciar sesión y descargar archivo"):
+    with requests.Session() as s:
+        payload = {"username": username, "password": password}
+        login = s.post(login_url, data=payload)
+        if "bienvenido" in login.text.lower():
+            st.success("Login exitoso")
+            id_ciclo = filtro_ciclo["Id_ciclo"]
+            file_url = f"{download_url}{id_ciclo}"
+            r = s.get(file_url)
+            if r.status_code == 200:
+                st.success("Archivo descargado correctamente")
+                st.download_button(label="Descargar Excel", data=r.content, file_name=f"Ciclo_{id_ciclo}.xlsx")
+            else:
+                st.error("Error al descargar archivo")
+        else:
+            st.error("Credenciales incorrectas")
