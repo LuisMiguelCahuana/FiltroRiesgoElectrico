@@ -7,7 +7,7 @@ import pandas as pd
 from io import BytesIO
 import re
 
-# CONFIG https://docs.google.com/spreadsheets/d/1PCheVtYVf839zjbg5PJuyc4-_OpSvsWbjQBOi7rC258/edit?usp=sharing
+# CONFIG 
 login_url = "http://sigof.distriluz.com.pe/plus/usuario/login"
 FILE_ID = "1PCheVtYVf839zjbg5PJuyc4-_OpSvsWbjQBOi7rC258"
 headers = {
@@ -54,6 +54,15 @@ def descargar_archivo(session, codigo):
     else:
         return None, None
 
+def filtrar_por_sector_y_obs(df, sectores_permitidos, obs_permitidas):
+    df['sector'] = df['sector'].astype(str).str.strip()
+    df['obs_descripcion'] = df['obs_descripcion'].astype(str).str.strip()
+
+    return df[
+        df['sector'].isin(sectores_permitidos) &
+        df['obs_descripcion'].isin(obs_permitidas)
+    ]
+
 def main():
     st.set_page_config(page_title="Lmc Lectura", layout="centered")
     st.markdown("""
@@ -64,7 +73,6 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
-    # Inicializar estados
     if "session" not in st.session_state:
         st.session_state.session = None
     if "defecto_iduunn" not in st.session_state:
@@ -74,7 +82,6 @@ def main():
     if "archivos_descargados" not in st.session_state:
         st.session_state.archivos_descargados = {}
 
-    # FORMULARIO DE LOGIN (solo si no hay sesión activa)
     if st.session_state.session is None:
         usuario = st.text_input("👤 Humano ingrese su usuario SIGOF")
         password = st.text_input("🔒 Humano ingrese su contraseña SIGOF", type="password")
@@ -111,18 +118,8 @@ def main():
                     else:
                         st.session_state.ciclos_disponibles = ciclos_dict
 
-                    st.rerun()  # 🔄 Refresca la app para ocultar login
+                    st.rerun()
 
-    # BOTÓN PARA CERRAR SESIÓN
-    #if st.session_state.session is not None:
-    #    if st.button("🔒 Cerrar sesión"):
-     #       st.session_state.session = None
-      #      st.session_state.defecto_iduunn = None
-       #     st.session_state.ciclos_disponibles = {}
-        #    st.session_state.archivos_descargados = {}
-         #   st.rerun()  # 🔄 Recarga para mostrar login
-
-    # MOSTRAR CICLOS DISPONIBLES Y DESCARGA
     if st.session_state.ciclos_disponibles:
         st.markdown("""
         <div style="display: flex; justify-content: left; align-items: left; width: 100%;">
@@ -145,14 +142,34 @@ def main():
                 st.warning("⚠️ Humano seleccione al menos un ciclo.")
             else:
                 st.session_state.archivos_descargados.clear()
+                df_ciclos = download_excel_from_drive(FILE_ID)
+
                 for nombre_concatenado in seleccionados:
                     codigo = st.session_state.ciclos_disponibles[nombre_concatenado]
+                    datos_filtro = df_ciclos[df_ciclos['Id_ciclo'] == int(codigo)].iloc[0]
+
+                    sectores = [s.strip() for s in str(datos_filtro['sectores']).split(',')]
+                    observaciones = [o.strip() for o in str(datos_filtro['observaciones_permitidas']).split(',')]
+
                     contenido, _ = descargar_archivo(st.session_state.session, codigo)
+
                     if contenido:
-                        filename = f"{nombre_concatenado}.xlsx"
-                        st.session_state.archivos_descargados[filename] = contenido
+                        df_archivo = pd.read_excel(BytesIO(contenido))
+                        columnas = df_archivo.columns.str.lower()
+
+                        if 'sector' in columnas.tolist() and 'obs_descripcion' in columnas.tolist():
+                            df_archivo.columns = columnas
+                            df_filtrado = filtrar_por_sector_y_obs(df_archivo, sectores, observaciones)
+                            buffer = BytesIO()
+                            df_filtrado.to_excel(buffer, index=False)
+                            buffer.seek(0)
+
+                            filename = f"{nombre_concatenado}.xlsx"
+                            st.session_state.archivos_descargados[filename] = buffer.read()
+                        else:
+                            st.warning(f"⚠️ El archivo del ciclo {codigo} no tiene las columnas necesarias.")
                     else:
-                        st.warning(f"⚠️ Humano se presentó un error al descargar ciclo {codigo}")
+                        st.warning(f"⚠️ Error al descargar ciclo {codigo}")
 
     if st.session_state.archivos_descargados:
         st.markdown("### ✅ Archivos listos para descargar:")
