@@ -170,7 +170,7 @@ def main():
                     else:
                         st.warning(f"⚠️ Error al descargar ciclo {codigo}")
 
-    # ⬇️ Sección modificada: Solo exportar la columna 'suministro'
+    # 🔽 MODIFICADO: Exportar solo la columna 'suministro' como archivo .xls
     if st.session_state.archivos_descargados:
         st.markdown("### ✅ Archivos listos para descargar:")
         for filename, contenido in st.session_state.archivos_descargados.items():
@@ -179,14 +179,16 @@ def main():
             if 'suministro' in df_completo.columns:
                 df_solo_suministro = df_completo[['suministro']].copy()
                 buffer_solo = BytesIO()
-                df_solo_suministro.to_excel(buffer_solo, index=False)
+                df_solo_suministro.to_excel(buffer_solo, index=False, engine='xlwt')  # .xls
                 buffer_solo.seek(0)
 
+                nuevo_nombre = filename.replace(".xlsx", ".xls")
+
                 st.download_button(
-                    label=f"⬇️ Descargar {filename} (solo suministro)",
+                    label=f"⬇️ Descargar {nuevo_nombre}",
                     data=buffer_solo,
-                    file_name=filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    file_name=nuevo_nombre,
+                    mime="application/vnd.ms-excel"
                 )
             else:
                 st.warning(f"⚠️ El archivo {filename} no contiene la columna 'suministro'.")
