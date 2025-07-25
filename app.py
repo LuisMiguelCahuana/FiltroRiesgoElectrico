@@ -1,206 +1,71 @@
 import streamlit as st
+import pandas as pd
 import requests
+from io import BytesIO
 from bs4 import BeautifulSoup
 from datetime import datetime
-from zoneinfo import ZoneInfo
-import pandas as pd
-from io import BytesIO
-import re
 
-# CONFIG 
-login_url = "http://sigof.distriluz.com.pe/plus/usuario/login"
+# CONFIGURACIÓN: ID del archivo de configuración (NO MODIFICAR)
 FILE_ID = "1PCheVtYVf839zjbg5PJuyc4-_OpSvsWbjQBOi7rC258"
-headers = {
-    "User-Agent": "Mozilla/5.0",
-    "Referer": login_url,
-}
 
-def login_and_get_defecto_iduunn(session, usuario, password):
-    credentials = {
-        "data[Usuario][usuario]": usuario,
-        "data[Usuario][pass]": password
-    }
-    login_page = session.get(login_url, headers=headers)
-    soup = BeautifulSoup(login_page.text, "html.parser")
-    csrf_token = soup.find("input", {"name": "_csrf_token"})
-    if csrf_token:
-        credentials["_csrf_token"] = csrf_token["value"]
-
-    response = session.post(login_url, data=credentials, headers=headers)
-    match_iduunn = re.search(r"var DEFECTO_IDUUNN\s*=\s*'(\d+)'", response.text)
-    if not match_iduunn:
-        return None, False
-
-    defecto_iduunn = int(match_iduunn.group(1))
-    dashboard_response = session.get("http://sigof.distriluz.com.pe/plus/dashboard/modulos", headers=headers)
-    if "login" in dashboard_response.text:
-        return None, False
-
-    return defecto_iduunn, True
-
-def download_excel_from_drive(file_id):
+# FUNCIÓN: Descargar archivo de configuración desde Google Sheets
+@st.cache_data
+def cargar_configuracion(file_id):
     url = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx"
     response = requests.get(url)
-    return pd.read_excel(BytesIO(response.content)) if response.status_code == 200 else None
+    return pd.read_excel(BytesIO(response.content))
 
-def descargar_archivo(session, codigo):
-    zona = ZoneInfo("America/Lima")
-    hoy = datetime.now(zona).strftime("%Y-%m-%d")
-    url = f"http://sigof.distriluz.com.pe/plus/Reportes/ajax_ordenes_historico_xls/U/{hoy}/{hoy}/0/{codigo}/0/0/0/0/0/0/0/0/9/0"
-    response = session.get(url, headers=headers)
+# FUNCIÓN: Descargar archivo Excel de un ciclo desde la web
+def descargar_archivo_excel(url):
+    response = requests.get(url)
+    return BytesIO(response.content)
 
-    if response.headers.get("Content-Type") == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-        return response.content, f"ciclo_{codigo}_{hoy}.xlsx"
-    else:
-        return None, None
+# CARGAR CONFIGURACIÓN
+df_config = cargar_configuracion(FILE_ID)
 
-def filtrar_por_sector_y_obs(df, sectores_permitidos, obs_permitidas):
-    df['sector'] = df['sector'].astype(str).str.strip()
-    df['obs_descripcion'] = df['obs_descripcion'].astype(str).str.strip()
+# FORMULARIO
+with st.form("Filtro de ciclo"):
+    ciclo_seleccionado = st.selectbox("Selecciona un ciclo disponible:", df_config["nombre_ciclo"].unique())
+    st.write("Solo se filtrarán sectores y observaciones si existen.")
+    boton_filtrar = st.form_submit_button("Descargar suministros filtrados")
 
-    cond_sector = df['sector'].isin(sectores_permitidos) if sectores_permitidos else pd.Series([True] * len(df))
-    cond_obs = df['obs_descripcion'].isin(obs_permitidas) if obs_permitidas else pd.Series([True] * len(df))
+# PROCESAMIENTO
+if boton_filtrar:
+    datos_ciclo = df_config[df_config["nombre_ciclo"] == ciclo_seleccionado].iloc[0]
+    id_ciclo = datos_ciclo["Id_ciclo"]
+    sectores_str = str(datos_ciclo["sectores"]) if pd.notna(datos_ciclo["sectores"]) else ""
+    obs_str = str(datos_ciclo["observaciones_permitidas"]) if pd.notna(datos_ciclo["observaciones_permitidas"]) else ""
 
-    return df[cond_sector & cond_obs]
+    # Descargar Excel del SIGOF (adaptar si tu URL cambia)
+    url_excel = f"http://sigof.distriluz.com.pe/plus/facturacion/archivo/ciclo/{id_ciclo}"
+    archivo = descargar_archivo_excel(url_excel)
+    df = pd.read_excel(archivo)
 
-def main():
-    st.set_page_config(page_title="Lmc Lectura", layout="centered")
-    st.markdown("""
-    <div style="display: flex; justify-content: center; align-items: center; width: 100%;">
-        <h1 style="font-size: clamp(18px, 5vw, 35px); text-align: center; color: #0078D7;">
-            🤖 Bienvenido al Sistema de Descarga SIGOF Lectura
-        </h1>
-    </div>
-    """, unsafe_allow_html=True)
+    # Aplicar filtro por sectores
+    if sectores_str:
+        lista_sectores = [s.strip() for s in sectores_str.split(',')]
+        df = df[df["sector"].astype(str).isin(lista_sectores)]
 
-    if "session" not in st.session_state:
-        st.session_state.session = None
-    if "defecto_iduunn" not in st.session_state:
-        st.session_state.defecto_iduunn = None
-    if "ciclos_disponibles" not in st.session_state:
-        st.session_state.ciclos_disponibles = {}
-    if "archivos_descargados" not in st.session_state:
-        st.session_state.archivos_descargados = {}
+    # Aplicar filtro por observaciones
+    if obs_str:
+        lista_obs = [o.strip() for o in obs_str.split(',')]
+        df = df[df["obs_descripcion"].astype(str).isin(lista_obs)]
 
-    if st.session_state.session is None:
-        usuario = st.text_input("👤 Humano ingrese su usuario SIGOF")
-        password = st.text_input("🔒 Humano ingrese su contraseña SIGOF", type="password")
+    # Construir archivo final con solo columna "Suministros"
+    df_final = pd.DataFrame()
+    df_final["Suministros"] = df["suministro"]
 
-        if st.button("Iniciar sesión"):
-            if not usuario or not password:
-                st.warning("⚠️ Humano ingrese usuario y contraseña.")
-            else:
-                session = requests.Session()
-                defecto_iduunn, login_ok = login_and_get_defecto_iduunn(session, usuario, password)
+    # Guardar archivo como formato_suministros.xls con hoja "Hoja1"
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlwt') as writer:
+        df_final.to_excel(writer, sheet_name="Hoja1", index=False)
+    output.seek(0)
 
-                if not login_ok:
-                    st.error("❌ Humano login fallido. Verifique sus credenciales.")
-                else:
-                    st.session_state.session = session
-                    st.session_state.defecto_iduunn = defecto_iduunn
-
-                    df_ciclos = download_excel_from_drive(FILE_ID)
-                    if df_ciclos is None:
-                        st.error("❌ Humano no se pudo descargar el Excel con ciclos.")
-                        return
-
-                    df_ciclos['id_unidad'] = pd.to_numeric(df_ciclos['id_unidad'], errors='coerce').fillna(-1).astype(int)
-                    df_ciclos = df_ciclos[df_ciclos['id_unidad'] == defecto_iduunn]
-
-                    ciclos_dict = {
-                        f"{row['Id_ciclo']} {row['nombre_ciclo']}": str(row['Id_ciclo'])
-                        for _, row in df_ciclos.iterrows()
-                        if pd.notnull(row['Id_ciclo']) and pd.notnull(row['nombre_ciclo'])
-                    }
-
-                    if not ciclos_dict:
-                        st.warning("⚠️ Humano no se encontraron ciclos para este ID.")
-                    else:
-                        st.session_state.ciclos_disponibles = ciclos_dict
-
-                    st.rerun()
-
-    if st.session_state.ciclos_disponibles:
-        st.markdown("""
-        <div style="display: flex; justify-content: left; align-items: left; width: 100%;">
-            <h5 style="font-size: clamp(14px, 5vw, 25px); text-align: center; color: #0078D7;">
-                🔎 Humano seleccione uno o más ciclos para descargar:
-            </h5>
-        </div>
-        """, unsafe_allow_html=True)
-
-        opciones = list(st.session_state.ciclos_disponibles.keys())
-        seleccionar_todos = st.checkbox("Humano si desea puede seleccionar todos los ciclos")
-
-        if seleccionar_todos:
-            seleccionados = st.multiselect("Ciclos disponibles", options=opciones, default=opciones)
-        else:
-            seleccionados = st.multiselect("Ciclos disponibles", options=opciones)
-
-        if st.button("📥 Descargar Ciclos Seleccionados"):
-            if not seleccionados:
-                st.warning("⚠️ Humano seleccione al menos un ciclo.")
-            else:
-                st.session_state.archivos_descargados.clear()
-                df_ciclos = download_excel_from_drive(FILE_ID)
-
-                for nombre_concatenado in seleccionados:
-                    codigo = st.session_state.ciclos_disponibles[nombre_concatenado]
-                    datos_filtro = df_ciclos[df_ciclos['Id_ciclo'] == int(codigo)].iloc[0]
-
-                    sectores = [s.strip() for s in str(datos_filtro['sectores']).split(',')] if pd.notna(datos_filtro['sectores']) else []
-                    observaciones = [o.strip() for o in str(datos_filtro['observaciones_permitidas']).split(',')] if pd.notna(datos_filtro['observaciones_permitidas']) else []
-
-                    contenido, _ = descargar_archivo(st.session_state.session, codigo)
-
-                    if contenido:
-                        df_archivo = pd.read_excel(BytesIO(contenido))
-                        columnas = df_archivo.columns.str.lower()
-
-                        if 'sector' in columnas.tolist() and 'obs_descripcion' in columnas.tolist():
-                            df_archivo.columns = columnas
-                            df_filtrado = filtrar_por_sector_y_obs(df_archivo, sectores, observaciones)
-                            buffer = BytesIO()
-                            df_filtrado.to_excel(buffer, index=False)
-                            buffer.seek(0)
-
-                            filename = f"{nombre_concatenado}.xlsx"
-                            st.session_state.archivos_descargados[filename] = buffer.read()
-                        else:
-                            st.warning(f"⚠️ El archivo del ciclo {codigo} no tiene las columnas necesarias.")
-                    else:
-                        st.warning(f"⚠️ Error al descargar ciclo {codigo}")
-
-    if st.session_state.archivos_descargados:
-        st.markdown("### ✅ Archivos listos para descargar:")
-        for filename, contenido in st.session_state.archivos_descargados.items():
-            st.download_button(
-                label=f"⬇️ Descargar {filename}",
-                data=contenido,
-                file_name=filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-if __name__ == "__main__":
-    main()
-
-# PIE DE PÁGINA
-st.markdown("""
-    <style>
-    .footer {
-        position: fixed;
-        bottom: 0;
-        width: 100%;
-        background-color: white;
-        padding: 10px 8px;
-        text-align: center;
-        font-size: 14px;
-        color: gray;
-        z-index: 9999;
-        border-top: 1px solid #ddd;
-    }
-    </style>
-    <div class="footer">
-        Desarrollado por Luis M. Cahuana F.
-    </div>
-""", unsafe_allow_html=True)
+    # Botón de descarga
+    st.success("✅ Archivo generado correctamente.")
+    st.download_button(
+        label="📥 Descargar formato_suministros.xls",
+        data=output,
+        file_name="formato_suministros.xls",
+        mime="application/vnd.ms-excel"
+    )
