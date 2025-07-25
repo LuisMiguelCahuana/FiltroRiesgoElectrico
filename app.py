@@ -57,7 +57,6 @@ def descargar_archivo(session, codigo):
 def filtrar_por_sector_y_obs(df, sectores_permitidos, obs_permitidas):
     df['sector'] = df['sector'].astype(str).str.strip()
     df['obs_descripcion'] = df['obs_descripcion'].astype(str).str.strip()
-
     return df[
         df['sector'].isin(sectores_permitidos) &
         df['obs_descripcion'].isin(obs_permitidas)
@@ -171,15 +170,26 @@ def main():
                     else:
                         st.warning(f"⚠️ Error al descargar ciclo {codigo}")
 
+    # ⬇️ Sección modificada: Solo exportar la columna 'suministro'
     if st.session_state.archivos_descargados:
         st.markdown("### ✅ Archivos listos para descargar:")
         for filename, contenido in st.session_state.archivos_descargados.items():
-            st.download_button(
-                label=f"⬇️ Descargar {filename}",
-                data=contenido,
-                file_name=filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            df_completo = pd.read_excel(BytesIO(contenido))
+
+            if 'suministro' in df_completo.columns:
+                df_solo_suministro = df_completo[['suministro']].copy()
+                buffer_solo = BytesIO()
+                df_solo_suministro.to_excel(buffer_solo, index=False)
+                buffer_solo.seek(0)
+
+                st.download_button(
+                    label=f"⬇️ Descargar {filename} (solo suministro)",
+                    data=buffer_solo,
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else:
+                st.warning(f"⚠️ El archivo {filename} no contiene la columna 'suministro'.")
 
 if __name__ == "__main__":
     main()
