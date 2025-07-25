@@ -58,10 +58,10 @@ def filtrar_por_sector_y_obs(df, sectores_permitidos, obs_permitidas):
     df['sector'] = df['sector'].astype(str).str.strip()
     df['obs_descripcion'] = df['obs_descripcion'].astype(str).str.strip()
 
-    cond_sector = df['sector'].isin(sectores_permitidos) if sectores_permitidos else pd.Series([True] * len(df))
-    cond_obs = df['obs_descripcion'].isin(obs_permitidas) if obs_permitidas else pd.Series([True] * len(df))
-
-    return df[cond_sector & cond_obs]
+    return df[
+        df['sector'].isin(sectores_permitidos) &
+        df['obs_descripcion'].isin(obs_permitidas)
+    ]
 
 def main():
     st.set_page_config(page_title="Lmc Lectura", layout="centered")
@@ -148,8 +148,8 @@ def main():
                     codigo = st.session_state.ciclos_disponibles[nombre_concatenado]
                     datos_filtro = df_ciclos[df_ciclos['Id_ciclo'] == int(codigo)].iloc[0]
 
-                    sectores = [s.strip() for s in str(datos_filtro['sectores']).split(',')] if pd.notna(datos_filtro['sectores']) else []
-                    observaciones = [o.strip() for o in str(datos_filtro['observaciones_permitidas']).split(',')] if pd.notna(datos_filtro['observaciones_permitidas']) else []
+                    sectores = [s.strip() for s in str(datos_filtro['sectores']).split(',')]
+                    observaciones = [o.strip() for o in str(datos_filtro['observaciones_permitidas']).split(',')]
 
                     contenido, _ = descargar_archivo(st.session_state.session, codigo)
 
